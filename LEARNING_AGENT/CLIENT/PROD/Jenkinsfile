@@ -1,1 +1,119 @@
-"// Pipeline placeholder para entorno PROD - TODO: Implementar lógica del pipeline"
+pipeline {
+  agent { label 'android' } // Agente Linux con JDK + Android SDK + Gradle Wrapper
+  tools { jdk 'JDK_17' }
+
+  options {
+    skipDefaultCheckout(true)
+    disableConcurrentBuilds()
+    ansiColor('xterm')
+    timestamps()
+    timeout(time: 40, unit: 'MINUTES')
+    buildDiscarder(logRotator(daysToKeepStr: '14', numToKeepStr: '20'))
+  }
+
+  parameters {
+    booleanParam(name: 'DEPLOY_ENABLED', defaultValue: false, description: 'Habilita publicación a PRODUCCIÓN (solo main).')
+    booleanParam(name: 'RUN_TESTS', defaultValue: true, description: 'Ejecutar tests unitarios.')
+    string(name: 'MODULE', defaultValue: 'app', description: 'Nombre del módulo Android.')
+    choice(name: 'BUILD_VARIANT', choices: ['Release','Debug'], description: 'Variante de build.')
+    choice(name: 'PACKAGE_FORMAT', choices: ['aab','apk'], description: 'Tipo de artefacto.')
+    string(name: 'KEYSTORE_FILE_CREDENTIALS_ID', defaultValue: 'android-keystore', description: 'File credential (.jks).')
+    string(name: 'KEYSTORE_PASSWORD_CREDENTIALS_ID', defaultValue: 'android-keystore-pass', description: 'Secret Text.')
+    string(name: 'KEY_ALIAS_CREDENTIALS_ID', defaultValue: 'android-key-alias', description: 'Secret Text.')
+    string(name: 'KEY_PASSWORD_CREDENTIALS_ID', defaultValue: 'android-key-pass', description: 'Secret Text.')
+    string(name: 'PLAY_SERVICE_ACCOUNT_CREDENTIALS_ID', defaultValue: 'play-service-account', description: 'File credential JSON.')
+  }
+
+  environment {
+    TARGET_ENV = 'prod'
+    PACKAGE_FILE = ''
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        cleanWs()
+        checkout scm
+      }
+    }
+
+    stage('Install') {
+      steps {
+        sh 'chmod +x ./gradlew || true && ./gradlew --no-daemon help'
+      }
+    }
+
+    stage('Test') {
+      when { expression { params.RUN_TESTS } }
+      steps {
+        sh "./gradlew --no-daemon test${params.BUILD_VARIANT}UnitTest"
+      }
+      post {
+        always {
+          junit testResults: "${params.MODULE}/build/test-results/test${params.BUILD_VARIANT}UnitTest/*.xml", allowEmptyResults: true
+          archiveArtifacts artifacts: "${params.MODULE}/build/reports/tests/test${params.BUILD_VARIANT}UnitTest/**", allowEmptyArchive: true
+        }
+      }
+    }
+
+    stage('Build') {
+      steps {
+        withCredentials([
+          file(credentialsId: params.KEYSTORE_FILE_CREDENTIALS_ID, variable: 'ANDROID_KEYSTORE'),
+          string(credentialsId: params.KEYSTORE_PASSWORD_CREDENTIALS_ID, variable: 'ANDROID_KEYSTORE_PASSWORD'),
+          string(credentialsId: params.KEY_ALIAS_CREDENTIALS_ID, variable: 'ANDROID_KEY_ALIAS'),
+          string(credentialsId: params.KEY_PASSWORD_CREDENTIALS_ID, variable: 'ANDROID_KEY_PASSWORD')
+        ]) {
+          script {
+            def variant = params.BUILD_VARIANT
+            def task = (params.PACKAGE_FORMAT == 'aab')
+              ? ":${params.MODULE}:bundle${variant}"
+              : ":${params.MODULE}:assemble${variant}"
+            sh "./gradlew --no-daemon clean ${task}"
+          }
+        }
+      }
+    }
+
+    stage('Package') {
+      steps {
+        script {
+          def v = params.BUILD_VARIANT.toLowerCase()
+          def pattern = (params.PACKAGE_FORMAT == 'aab')
+            ? "${params.MODULE}/build/outputs/bundle/${v}/*.aab"
+            : "${params.MODULE}/build/outputs/apk/${v}/*.apk"
+          def files = findFiles(glob: pattern)
+          if (!files) { error "No se encontró artefacto con patrón: ${pattern}" }
+          env.PACKAGE_FILE = files[0].path
+        }
+        archiveArtifacts artifacts: "${env.PACKAGE_FILE}", fingerprint: true
+        archiveArtifacts artifacts: "${params.MODULE}/build/outputs/mapping/${params.BUILD_VARIANT.toLowerCase()}/mapping.txt", allowEmptyArchive: true
+      }
+    }
+
+    stage('Publish') {
+      when {
+        allOf { branch 'main'; expression { params.DEPLOY_ENABLED } }
+      }
+      steps {
+        script {
+          input message: "Aprobar publicación a PRODUCCIÓN (main) del artefacto ${env.PACKAGE_FILE}?", ok: "Publicar"
+          def variant = params.BUILD_VARIANT
+          def publishTask = (params.PACKAGE_FORMAT == 'aab')
+            ? ":${params.MODULE}:publish${variant}Bundle"
+            : ":${params.MODULE}:publish${variant}Apk"
+          withCredentials([file(credentialsId: params.PLAY_SERVICE_ACCOUNT_CREDENTIALS_ID, variable: 'PLAY_SERVICE_ACCOUNT_JSON')]) {
+            sh "./gradlew --no-daemon ${publishTask}"
+          }
+          echo 'Publicación completada.'
+        }
+      }
+    }
+  }
+
+  post {
+    success { echo "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BRANCH_NAME})" }
+    failure { echo "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BRANCH_NAME})" }
+    always { cleanWs(deleteDirs: true, notFailBuild: true) }
+  }
+}
