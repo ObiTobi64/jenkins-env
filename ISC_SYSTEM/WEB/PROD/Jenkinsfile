@@ -16,6 +16,7 @@ pipeline {
     booleanParam(name: 'RUN_TESTS', defaultValue: true, description: 'Ejecutar tests.')
     string(name: 'NPM_TOKEN_CREDENTIALS_ID', defaultValue: 'npm-token', description: 'Secret Text con NPM_TOKEN.')
     string(name: 'DOCKER_CREDENTIALS_ID', defaultValue: 'docker-registry', description: 'Credenciales del registry Docker.')
+  string(name: 'VERCEL_TOKEN_CREDENTIALS_ID', defaultValue: 'vercel-token', description: 'Secret Text con Vercel token (opcional).')
     string(name: 'REGISTRY_URL', defaultValue: 'ghcr.io', description: 'URL del registry destino.')
     string(name: 'IMAGE_NAME', defaultValue: 'org/isc-system-web', description: 'Nombre de la imagen (sin tag).')
     string(name: 'IMAGE_TAG', defaultValue: '', description: 'Tag a usar; vacío genera version-commit.')
@@ -60,6 +61,23 @@ pipeline {
             npm ci --no-audit --no-fund
           '''
         }
+          // Optional: deploy to Vercel if VERCEL token credential is provided
+          withCredentials([string(credentialsId: params.VERCEL_TOKEN_CREDENTIALS_ID, variable: 'VERCEL_TOKEN')]) {
+            sh '''
+              set -e
+              if [ -n "$VERCEL_TOKEN" ]; then
+                echo "Attempting Vercel deploy (token provided)"
+                # prefer deploying the build directory if present
+                if [ -d build ]; then
+                  npx vercel --prod --confirm --token "$VERCEL_TOKEN" build || true
+                else
+                  npx vercel --prod --confirm --token "$VERCEL_TOKEN" || true
+                fi
+              else
+                echo "VERCEL_TOKEN not provided; skipping Vercel deploy"
+              fi
+            '''
+          }
       }
     }
 

@@ -12,6 +12,7 @@ Pipeline para el entorno PRODUCCIÓN, genérico y reutilizable. **Etapas:** chec
 - `npm-token` (Secret Text): NPM_TOKEN para `npm ci` y acceso a registries privados.
 - `docker-registry` (Username with password): credenciales de tu registry 
  - (Opcional) Canal/endpoint para notificaciones externas si integras un sistema de alertas (no usado por defecto).
+ - `vercel-token` (Secret Text) (opcional): token de Vercel para despliegues desde Jenkins (ID por defecto `vercel-token`).
 
 **No almacenar secretos en el repositorio.**
 
@@ -38,6 +39,7 @@ Pipeline para el entorno PRODUCCIÓN, genérico y reutilizable. **Etapas:** chec
 7. Publish:
    - Solo `main` + `DEPLOY_ENABLED=true` + aprobación manual.
    - Login en registry, build y push de la imagen Docker: `${REGISTRY_URL}/${IMAGE_NAME}:${IMAGE_TAG}`.
+    - (Opcional) Si se configura la credencial `vercel-token`, la pipeline intentará desplegar el contenido a Vercel después del push de Docker. Para esto Jenkins hace `npx vercel --prod` (requiere que el agente tenga Node y npx disponibles y que el proyecto esté configurado en Vercel).
 
    ## Cómo ejecutar una validación (pasos detallados)
 
@@ -81,6 +83,8 @@ Pipeline para el entorno PRODUCCIÓN, genérico y reutilizable. **Etapas:** chec
    2) Settings -> Environment Variables -> agregar `NPM_TOKEN` si hace falta.
    3) Build Command: `npm run build` — Output Directory: `build` o `dist` según tu proyecto.
    4) Hacer push a branch de validación (p. ej. `staging`) y revisar el Preview Deployment en Vercel.
+
+   Nota: si quieres automatizar deploys a Vercel desde Jenkins añade la credencial `vercel-token` en Jenkins (Manage Credentials -> Secret text -> ID `vercel-token`) y habilita `DEPLOY_ENABLED` en un run de validación o en `main` según proceda. La pipeline intentará desplegar el directorio `build/` si existe.
 
    ## Checklist de verificación (aceptación)
    Antes de habilitar `DEPLOY_ENABLED` para producción, valida lo siguiente en tu entorno de prueba:
