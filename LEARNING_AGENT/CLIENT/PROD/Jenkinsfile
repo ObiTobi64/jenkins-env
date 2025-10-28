@@ -27,6 +27,7 @@ pipeline {
   environment {
     TARGET_ENV = 'prod'
     PACKAGE_FILE = ''
+    PROJECT_DIR = 'LEARNING_AGENT/CLIENT'
   }
 
   stages {
@@ -39,19 +40,25 @@ pipeline {
 
     stage('Install') {
       steps {
-        sh 'chmod +x ./gradlew || true && ./gradlew --no-daemon help'
+        dir("${env.PROJECT_DIR}") {
+          sh 'chmod +x ./gradlew || true && ./gradlew --no-daemon help'
+        }
       }
     }
 
     stage('Test') {
       when { expression { params.RUN_TESTS } }
       steps {
-        sh "./gradlew --no-daemon test${params.BUILD_VARIANT}UnitTest"
+        dir("${env.PROJECT_DIR}") {
+          sh "./gradlew --no-daemon test${params.BUILD_VARIANT}UnitTest"
+        }
       }
       post {
         always {
-          junit testResults: "${params.MODULE}/build/test-results/test${params.BUILD_VARIANT}UnitTest/*.xml", allowEmptyResults: true
-          archiveArtifacts artifacts: "${params.MODULE}/build/reports/tests/test${params.BUILD_VARIANT}UnitTest/**", allowEmptyArchive: true
+          dir("${env.PROJECT_DIR}") {
+            junit testResults: "${params.MODULE}/build/test-results/test${params.BUILD_VARIANT}UnitTest/*.xml", allowEmptyResults: true
+            archiveArtifacts artifacts: "${params.MODULE}/build/reports/tests/test${params.BUILD_VARIANT}UnitTest/**", allowEmptyArchive: true
+          }
         }
       }
     }
@@ -69,7 +76,9 @@ pipeline {
             def task = (params.PACKAGE_FORMAT == 'aab')
               ? ":${params.MODULE}:bundle${variant}"
               : ":${params.MODULE}:assemble${variant}"
-            sh "./gradlew --no-daemon clean ${task}"
+            dir("${env.PROJECT_DIR}") {
+              sh "./gradlew --no-daemon clean ${task}"
+            }
           }
         }
       }
@@ -82,9 +91,11 @@ pipeline {
           def pattern = (params.PACKAGE_FORMAT == 'aab')
             ? "${params.MODULE}/build/outputs/bundle/${v}/*.aab"
             : "${params.MODULE}/build/outputs/apk/${v}/*.apk"
-          def files = findFiles(glob: pattern)
-          if (!files) { error "No se encontró artefacto con patrón: ${pattern}" }
-          env.PACKAGE_FILE = files[0].path
+          dir("${env.PROJECT_DIR}") {
+            def files = findFiles(glob: pattern)
+            if (!files) { error "No se encontró artefacto con patrón: ${pattern}" }
+            env.PACKAGE_FILE = files[0].path
+          }
         }
         archiveArtifacts artifacts: "${env.PACKAGE_FILE}", fingerprint: true
         archiveArtifacts artifacts: "${params.MODULE}/build/outputs/mapping/${params.BUILD_VARIANT.toLowerCase()}/mapping.txt", allowEmptyArchive: true
@@ -103,7 +114,9 @@ pipeline {
             ? ":${params.MODULE}:publish${variant}Bundle"
             : ":${params.MODULE}:publish${variant}Apk"
           withCredentials([file(credentialsId: params.PLAY_SERVICE_ACCOUNT_CREDENTIALS_ID, variable: 'PLAY_SERVICE_ACCOUNT_JSON')]) {
-            sh "./gradlew --no-daemon ${publishTask}"
+            dir("${env.PROJECT_DIR}") {
+              sh "./gradlew --no-daemon ${publishTask}"
+            }
           }
           echo 'Publicación completada.'
         }

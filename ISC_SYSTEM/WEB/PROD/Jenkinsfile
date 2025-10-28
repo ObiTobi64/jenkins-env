@@ -120,13 +120,6 @@ pipeline {
     success { echo "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BRANCH_NAME})" }
     failure {
       echo "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BRANCH_NAME})"
-      script {
-        try {
-          if (env.SLACK_CHANNEL) {
-            slackSend channel: env.SLACK_CHANNEL, color: '#e01e5a', message: "❌ ${env.JOB_NAME} #${env.BUILD_NUMBER} FAILED (${env.BRANCH_NAME})"
-          }
-        } catch (ignored) { }
-      }
     }
     always { cleanWs(deleteDirs: true, notFailBuild: true) }
   }

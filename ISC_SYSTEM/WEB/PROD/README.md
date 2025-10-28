@@ -11,7 +11,7 @@ Pipeline para el entorno PRODUCCIÓN, genérico y reutilizable. **Etapas:** chec
 ## Credenciales
 - `npm-token` (Secret Text): NPM_TOKEN para `npm ci` y acceso a registries privados.
 - `docker-registry` (Username with password): credenciales de tu registry 
-- (Opcional) Variable global `SLACK_CHANNEL` si usas `slackSend`.
+ - (Opcional) Canal/endpoint para notificaciones externas si integras un sistema de alertas (no usado por defecto).
 
 **No almacenar secretos en el repositorio.**
 
@@ -51,7 +51,7 @@ Pipeline para el entorno PRODUCCIÓN, genérico y reutilizable. **Etapas:** chec
    docker run --name jenkins-local -p 8080:8080 -p 50000:50000 -v jenkins_home:C:\var\jenkins_home -d jenkins/jenkins:lts
    ```
 
-   2) Abre http://localhost:8080, completa el setup e instala plugins: Pipeline, Git, Credentials Binding, Docker Pipeline, JUnit, Workspace Cleanup y Slack (si lo usarás).
+   2) Abre http://localhost:8080, completa el setup e instala plugins: Pipeline, Git, Credentials Binding, Docker Pipeline, JUnit, Workspace Cleanup y, opcionalmente, plugins de notificación si planeas añadir alertas externas.
 
    3) Crear Credentials (Manage Jenkins -> Credentials -> System -> Global credentials):
       - Secret text: ID `npm-token` -> valor: tu NPM_TOKEN
@@ -70,7 +70,7 @@ Pipeline para el entorno PRODUCCIÓN, genérico y reutilizable. **Etapas:** chec
    docker run --rm -v ${PWD}.Path:/workspace -w /workspace jenkins/jenkinsfile-runner
    ```
 
-   Limitaciones: la imagen del runner debe incluir los plugins que usa tu `Jenkinsfile` (credentials-binding, docker-workflow, junit, slack, etc.). `input` (aprobaciones) puede bloquear la ejecución; para pruebas automatizadas ejecuta con `DEPLOY_ENABLED=false`.
+   Limitaciones: la imagen del runner debe incluir los plugins que usa tu `Jenkinsfile` (credentials-binding, docker-workflow, junit, etc.). `input` (aprobaciones) puede bloquear la ejecución; para pruebas automatizadas ejecuta con `DEPLOY_ENABLED=false`.
 
    ### Opción C — Validación parcial en Vercel (build & deploy)
 
@@ -88,7 +88,7 @@ Pipeline para el entorno PRODUCCIÓN, genérico y reutilizable. **Etapas:** chec
    - [ ] El job (o runner) ejecuta y muestra las etapas nombradas: `Checkout`, `Prepare`, `Install`, `Test`, `Build`, `Package`, `Publish` (si aplicable).
    - [ ] La ejecución finaliza con estado `SUCCESS`.
    - [ ] Despliegues a producción están restringidos: solo ejecutables desde `main` y requieren `DEPLOY_ENABLED=true` y aprobación manual.
-   - [ ] Las notificaciones de fallo funcionan: forzar fallo en `Test` y verificar `post { failure { ... } }` (si `SLACK_CHANNEL` configurado se intentará enviar mensaje).
+    - [ ] Las notificaciones de fallo están documentadas: forzar fallo en `Test` y verificar el comportamiento del `post { failure { ... } }`. Esta pipeline no envía notificaciones externas por defecto; integra un mecanismo externo si lo necesitas.
    - [ ] Todas las credenciales están en Jenkins Credentials y no en el repo.
 
    ## Sugerencias adicionales
@@ -101,4 +101,4 @@ Pipeline para el entorno PRODUCCIÓN, genérico y reutilizable. **Etapas:** chec
 ## Notas de operación
 - Validar primero en un entorno de prueba (ej. Vercel u otro) antes de activar `DEPLOY_ENABLED`.
 - Ajustar Dockerfile y context según el proyecto.
-- Si no usas Slack, no definas `SLACK_CHANNEL` y el pipeline omitirá esa notificación.
+ - La pipeline no envía mensajes a Slack ni a otros canales externos por defecto. Si quieres notificaciones, implementa un job separado o integra un plugin/servicio de notificaciones con credenciales gestionadas en Jenkins Credentials.
