@@ -28,6 +28,7 @@ pipeline {
     GIT_SHORT_COMMIT = ''
     IMAGE_TAG_EFFECTIVE = ''
     PACKAGE_FILE = ''
+    VERCEL_TOKEN = credentials('vercel-token')
   }
 
   stages {

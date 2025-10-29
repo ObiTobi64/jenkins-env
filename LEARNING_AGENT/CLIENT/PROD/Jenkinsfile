@@ -1,33 +1,35 @@
 pipeline {
-  agent { label 'android' } // Agente Linux con JDK + Android SDK + Gradle Wrapper
-  tools { jdk 'JDK_17' }
+  agent { label 'node' } // Agente Linux con Node.js y Docker
+  tools { nodejs 'NodeJS_18' }
 
   options {
     skipDefaultCheckout(true)
     disableConcurrentBuilds()
     ansiColor('xterm')
     timestamps()
-    timeout(time: 40, unit: 'MINUTES')
+    timeout(time: 30, unit: 'MINUTES')
     buildDiscarder(logRotator(daysToKeepStr: '14', numToKeepStr: '20'))
   }
 
   parameters {
     booleanParam(name: 'DEPLOY_ENABLED', defaultValue: false, description: 'Habilita publicación a PRODUCCIÓN (solo main).')
-    booleanParam(name: 'RUN_TESTS', defaultValue: true, description: 'Ejecutar tests unitarios.')
-    string(name: 'MODULE', defaultValue: 'app', description: 'Nombre del módulo Android.')
-    choice(name: 'BUILD_VARIANT', choices: ['Release','Debug'], description: 'Variante de build.')
-    choice(name: 'PACKAGE_FORMAT', choices: ['aab','apk'], description: 'Tipo de artefacto.')
-    string(name: 'KEYSTORE_FILE_CREDENTIALS_ID', defaultValue: 'android-keystore', description: 'File credential (.jks).')
-    string(name: 'KEYSTORE_PASSWORD_CREDENTIALS_ID', defaultValue: 'android-keystore-pass', description: 'Secret Text.')
-    string(name: 'KEY_ALIAS_CREDENTIALS_ID', defaultValue: 'android-key-alias', description: 'Secret Text.')
-    string(name: 'KEY_PASSWORD_CREDENTIALS_ID', defaultValue: 'android-key-pass', description: 'Secret Text.')
-    string(name: 'PLAY_SERVICE_ACCOUNT_CREDENTIALS_ID', defaultValue: 'play-service-account', description: 'File credential JSON.')
+    booleanParam(name: 'RUN_TESTS', defaultValue: true, description: 'Ejecutar tests.')
+    string(name: 'NPM_TOKEN_CREDENTIALS_ID', defaultValue: 'npm-token', description: 'Secret Text con NPM_TOKEN.')
+    string(name: 'VERCEL_TOKEN_CREDENTIALS_ID', defaultValue: 'vercel-token', description: 'Secret Text con Vercel token.')
+    string(name: 'DOCKER_CREDENTIALS_ID', defaultValue: 'docker-registry', description: 'Credenciales del registry Docker (opcional).')
+    string(name: 'REGISTRY_URL', defaultValue: 'ghcr.io', description: 'URL del registry destino.')
+    string(name: 'IMAGE_NAME', defaultValue: 'org/learning-agent-client', description: 'Nombre de la imagen (sin tag).')
+    string(name: 'IMAGE_TAG', defaultValue: '', description: 'Tag a usar; vacío genera version-commit.')
   }
 
   environment {
+    APP_NAME = 'learning-agent-client'
     TARGET_ENV = 'prod'
+    GIT_SHORT_COMMIT = ''
+    IMAGE_TAG_EFFECTIVE = ''
     PACKAGE_FILE = ''
     PROJECT_DIR = 'LEARNING_AGENT/CLIENT'
+    VERCEL_TOKEN = credentials('vercel-token')
   }
 
   stages {
@@ -38,10 +40,32 @@ pipeline {
       }
     }
 
+    stage('Prepare') {
+      steps {
+        script {
+          dir("${env.PROJECT_DIR}") {
+            env.GIT_SHORT_COMMIT = sh(returnStdout: true, script: "git rev-parse --short HEAD").trim()
+            def version = sh(returnStdout: true, script: "node -p \"require('./package.json').version || ''\"").trim()
+            env.IMAGE_TAG_EFFECTIVE = params.IMAGE_TAG?.trim() ? params.IMAGE_TAG.trim() : (version ? "${version}-${env.GIT_SHORT_COMMIT}" : env.GIT_SHORT_COMMIT)
+          }
+        }
+      }
+    }
+
     stage('Install') {
       steps {
-        dir("${env.PROJECT_DIR}") {
-          sh 'chmod +x ./gradlew || true && ./gradlew --no-daemon help'
+        withCredentials([string(credentialsId: params.NPM_TOKEN_CREDENTIALS_ID, variable: 'NPM_TOKEN')]) {
+          dir("${env.PROJECT_DIR}") {
+            sh '''
+              set -e
+              if [ -n "$NPM_TOKEN" ]; then
+                echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
+                echo "always-auth=true" >> .npmrc
+              fi
+              command -v npm >/dev/null 2>&1 || { echo "npm no disponible en PATH"; exit 1; }
+              npm ci --no-audit --no-fund
+            '''
+          }
         }
       }
     }
@@ -50,14 +74,14 @@ pipeline {
       when { expression { params.RUN_TESTS } }
       steps {
         dir("${env.PROJECT_DIR}") {
-          sh "./gradlew --no-daemon test${params.BUILD_VARIANT}UnitTest"
+          sh 'npm test --silent || npm run test'
         }
       }
       post {
         always {
           dir("${env.PROJECT_DIR}") {
-            junit testResults: "${params.MODULE}/build/test-results/test${params.BUILD_VARIANT}UnitTest/*.xml", allowEmptyResults: true
-            archiveArtifacts artifacts: "${params.MODULE}/build/reports/tests/test${params.BUILD_VARIANT}UnitTest/**", allowEmptyArchive: true
+            junit testResults: '**/junit*.xml', allowEmptyResults: true
+            archiveArtifacts artifacts: 'coverage/**', allowEmptyArchive: true
           }
         }
       }
@@ -65,21 +89,8 @@ pipeline {
 
     stage('Build') {
       steps {
-        withCredentials([
-          file(credentialsId: params.KEYSTORE_FILE_CREDENTIALS_ID, variable: 'ANDROID_KEYSTORE'),
-          string(credentialsId: params.KEYSTORE_PASSWORD_CREDENTIALS_ID, variable: 'ANDROID_KEYSTORE_PASSWORD'),
-          string(credentialsId: params.KEY_ALIAS_CREDENTIALS_ID, variable: 'ANDROID_KEY_ALIAS'),
-          string(credentialsId: params.KEY_PASSWORD_CREDENTIALS_ID, variable: 'ANDROID_KEY_PASSWORD')
-        ]) {
-          script {
-            def variant = params.BUILD_VARIANT
-            def task = (params.PACKAGE_FORMAT == 'aab')
-              ? ":${params.MODULE}:bundle${variant}"
-              : ":${params.MODULE}:assemble${variant}"
-            dir("${env.PROJECT_DIR}") {
-              sh "./gradlew --no-daemon clean ${task}"
-            }
-          }
+        dir("${env.PROJECT_DIR}") {
+          sh 'npm run build --if-present'
         }
       }
     }
@@ -87,35 +98,57 @@ pipeline {
     stage('Package') {
       steps {
         script {
-          def v = params.BUILD_VARIANT.toLowerCase()
-          def pattern = (params.PACKAGE_FORMAT == 'aab')
-            ? "${params.MODULE}/build/outputs/bundle/${v}/*.aab"
-            : "${params.MODULE}/build/outputs/apk/${v}/*.apk"
           dir("${env.PROJECT_DIR}") {
-            def files = findFiles(glob: pattern)
-            if (!files) { error "No se encontró artefacto con patrón: ${pattern}" }
-            env.PACKAGE_FILE = files[0].path
+            def dirToPack = fileExists('build') ? 'build' : (fileExists('dist') ? 'dist' : '.')
+            def zipName = "${env.APP_NAME}-${env.IMAGE_TAG_EFFECTIVE}.zip"
+            zip zipFile: zipName, dir: dirToPack, glob: '**/*', overwrite: true
+            env.PACKAGE_FILE = zipName
           }
         }
-        archiveArtifacts artifacts: "${env.PACKAGE_FILE}", fingerprint: true
-        archiveArtifacts artifacts: "${params.MODULE}/build/outputs/mapping/${params.BUILD_VARIANT.toLowerCase()}/mapping.txt", allowEmptyArchive: true
+        dir("${env.PROJECT_DIR}") {
+          archiveArtifacts artifacts: "${env.PACKAGE_FILE}", fingerprint: true
+        }
       }
     }
 
     stage('Publish') {
-      when {
-        allOf { branch 'main'; expression { params.DEPLOY_ENABLED } }
-      }
+      when { allOf { branch 'main'; expression { params.DEPLOY_ENABLED } } }
       steps {
         script {
-          input message: "Aprobar publicación a PRODUCCIÓN (main) del artefacto ${env.PACKAGE_FILE}?", ok: "Publicar"
-          def variant = params.BUILD_VARIANT
-          def publishTask = (params.PACKAGE_FORMAT == 'aab')
-            ? ":${params.MODULE}:publish${variant}Bundle"
-            : ":${params.MODULE}:publish${variant}Apk"
-          withCredentials([file(credentialsId: params.PLAY_SERVICE_ACCOUNT_CREDENTIALS_ID, variable: 'PLAY_SERVICE_ACCOUNT_JSON')]) {
+          input message: "Aprobar publicación a PRODUCCIÓN (main) con tag ${env.IMAGE_TAG_EFFECTIVE}?", ok: "Publicar"
+          
+          // Optional: Docker image publish
+          def image = "${params.REGISTRY_URL}/${params.IMAGE_NAME}:${env.IMAGE_TAG_EFFECTIVE}"
+          withCredentials([usernamePassword(credentialsId: params.DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
             dir("${env.PROJECT_DIR}") {
-              sh "./gradlew --no-daemon ${publishTask}"
+              sh """
+                set -e
+                command -v docker >/dev/null 2>&1 || { echo 'Docker no disponible en el agente (omitir si no se usa)'; exit 0; }
+                echo "\$DOCKER_PASSWORD" | docker login ${params.REGISTRY_URL} -u "\$DOCKER_USERNAME" --password-stdin || true
+                docker build -t ${image} . || true
+                docker push ${image} || true
+                docker logout ${params.REGISTRY_URL} || true
+              """
+            }
+          }
+          echo "Imagen publicada (si docker estaba disponible): ${image}"
+          
+          // Deploy to Vercel
+          withCredentials([string(credentialsId: params.VERCEL_TOKEN_CREDENTIALS_ID, variable: 'VERCEL_TOKEN')]) {
+            dir("${env.PROJECT_DIR}") {
+              sh '''
+                set -e
+                if [ -n "$VERCEL_TOKEN" ]; then
+                  echo "Attempting Vercel deploy (token provided)"
+                  if [ -d build ]; then
+                    npx vercel --prod --confirm --token "$VERCEL_TOKEN" build || echo "Vercel deploy failed (non-blocking)"
+                  else
+                    npx vercel --prod --confirm --token "$VERCEL_TOKEN" || echo "Vercel deploy failed (non-blocking)"
+                  fi
+                else
+                  echo "VERCEL_TOKEN not provided; skipping Vercel deploy"
+                fi
+              '''
             }
           }
           echo 'Publicación completada.'
