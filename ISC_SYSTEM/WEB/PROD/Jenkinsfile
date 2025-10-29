@@ -62,23 +62,6 @@ pipeline {
             npm ci --no-audit --no-fund
           '''
         }
-          // Optional: deploy to Vercel if VERCEL token credential is provided
-          withCredentials([string(credentialsId: params.VERCEL_TOKEN_CREDENTIALS_ID, variable: 'VERCEL_TOKEN')]) {
-            sh '''
-              set -e
-              if [ -n "$VERCEL_TOKEN" ]; then
-                echo "Attempting Vercel deploy (token provided)"
-                # prefer deploying the build directory if present
-                if [ -d build ]; then
-                  npx vercel --prod --confirm --token "$VERCEL_TOKEN" build || true
-                else
-                  npx vercel --prod --confirm --token "$VERCEL_TOKEN" || true
-                fi
-              else
-                echo "VERCEL_TOKEN not provided; skipping Vercel deploy"
-              fi
-            '''
-          }
       }
     }
 
@@ -118,6 +101,26 @@ pipeline {
       steps {
         script {
           input message: "Aprobar publicación a PRODUCCIÓN (main) con tag ${env.IMAGE_TAG_EFFECTIVE}?", ok: "Publicar"
+          
+          // Deployar 
+          withCredentials([string(credentialsId: params.VERCEL_TOKEN_CREDENTIALS_ID, variable: 'VERCEL_TOKEN')]) {
+            sh '''
+              set -e
+              if [ -n "$VERCEL_TOKEN" ]; then
+                echo "Deploying to Vercel (production)..."
+                if [ -d build ]; then
+                  npx vercel --prod --confirm --token "$VERCEL_TOKEN" build
+                else
+                  npx vercel --prod --confirm --token "$VERCEL_TOKEN"
+                fi
+                echo "Vercel deployment completed successfully"
+              else
+                echo "VERCEL_TOKEN not provided; skipping Vercel deploy"
+              fi
+            '''
+          }
+          
+          // Then optionally publish Docker image
           def image = "${params.REGISTRY_URL}/${params.IMAGE_NAME}:${env.IMAGE_TAG_EFFECTIVE}"
           withCredentials([usernamePassword(credentialsId: params.DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
             sh """
@@ -129,7 +132,7 @@ pipeline {
               docker logout ${params.REGISTRY_URL} || true
             """
           }
-          echo "Imagen publicada: ${image}"
+          echo "Imagen Docker publicada: ${image}"
         }
       }
     }

@@ -117,13 +117,33 @@ pipeline {
         script {
           input message: "Aprobar publicación a PRODUCCIÓN (main) con tag ${env.IMAGE_TAG_EFFECTIVE}?", ok: "Publicar"
           
-          // Optional: Docker image publish
+          // Deploy to Vercel FIRST (after all tests and build are successful)
+          withCredentials([string(credentialsId: params.VERCEL_TOKEN_CREDENTIALS_ID, variable: 'VERCEL_TOKEN')]) {
+            dir("${env.PROJECT_DIR}") {
+              sh '''
+                set -e
+                if [ -n "$VERCEL_TOKEN" ]; then
+                  echo "Deploying to Vercel (production)..."
+                  if [ -d build ]; then
+                    npx vercel --prod --confirm --token "$VERCEL_TOKEN" build
+                  else
+                    npx vercel --prod --confirm --token "$VERCEL_TOKEN"
+                  fi
+                  echo "Vercel deployment completed successfully"
+                else
+                  echo "VERCEL_TOKEN not provided; skipping Vercel deploy"
+                fi
+              '''
+            }
+          }
+          
+          // Then optionally publish Docker image
           def image = "${params.REGISTRY_URL}/${params.IMAGE_NAME}:${env.IMAGE_TAG_EFFECTIVE}"
           withCredentials([usernamePassword(credentialsId: params.DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
             dir("${env.PROJECT_DIR}") {
               sh """
                 set -e
-                command -v docker >/dev/null 2>&1 || { echo 'Docker no disponible en el agente (omitir si no se usa)'; exit 0; }
+                command -v docker >/dev/null 2>&1 || { echo 'Docker no disponible en el agente (opcional)'; exit 0; }
                 echo "\$DOCKER_PASSWORD" | docker login ${params.REGISTRY_URL} -u "\$DOCKER_USERNAME" --password-stdin || true
                 docker build -t ${image} . || true
                 docker push ${image} || true
@@ -131,26 +151,7 @@ pipeline {
               """
             }
           }
-          echo "Imagen publicada (si docker estaba disponible): ${image}"
-          
-          // Deploy to Vercel
-          withCredentials([string(credentialsId: params.VERCEL_TOKEN_CREDENTIALS_ID, variable: 'VERCEL_TOKEN')]) {
-            dir("${env.PROJECT_DIR}") {
-              sh '''
-                set -e
-                if [ -n "$VERCEL_TOKEN" ]; then
-                  echo "Attempting Vercel deploy (token provided)"
-                  if [ -d build ]; then
-                    npx vercel --prod --confirm --token "$VERCEL_TOKEN" build || echo "Vercel deploy failed (non-blocking)"
-                  else
-                    npx vercel --prod --confirm --token "$VERCEL_TOKEN" || echo "Vercel deploy failed (non-blocking)"
-                  fi
-                else
-                  echo "VERCEL_TOKEN not provided; skipping Vercel deploy"
-                fi
-              '''
-            }
-          }
+          echo "Imagen Docker publicada (si docker estaba disponible): ${image}"
           echo 'Publicación completada.'
         }
       }
